@@ -1,0 +1,14 @@
+node_modules/
+server/node_modules/
+client/node_modules/
+client/dist/
+.DS_Store
+Thumbs.db
+.env
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+.vscode/
+.idea/
+API_REFERENCE.md
+.env.example
