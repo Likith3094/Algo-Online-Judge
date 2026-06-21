@@ -119,10 +119,12 @@ function ContestDetails() {
   });
 
   const now = new Date();
+  const contestStarted = now >= new Date(contest.startTime);
   const contestEnded = now > new Date(contest.endTime);
 
-  // Users must register to see problems unless they are the creator or the contest has ended
-  const canAccessContent = isRegistered || isCreator || contestEnded;
+  // Users must register to see problems and the contest must have started,
+  // unless they are the creator or the contest has ended
+  const canAccessContent = isCreator || contestEnded || (isRegistered && contestStarted);
 
   return (
     <div className="contest-details-container">

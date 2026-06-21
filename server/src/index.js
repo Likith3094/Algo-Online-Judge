@@ -6,6 +6,7 @@ const connectDB = require('./config/db');
 const authRoutes = require('./routes/auth');
 const contestRoutes = require('./routes/contests');
 const problemRoutes = require('./routes/problems');
+const testcaseRoutes = require('./routes/testcases');
 
 dotenv.config();
 const app = express();
@@ -18,6 +19,7 @@ app.use(cookieParser());
 app.use('/api/auth', authRoutes);
 app.use('/api/contests', contestRoutes);
 app.use('/api/problems', problemRoutes);
+app.use('/api/testcases', testcaseRoutes);
 
 app.get('/api/health', (req, res) => res.json({ success: true, message: 'Server is running' }));
 

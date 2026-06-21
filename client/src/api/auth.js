@@ -14,6 +14,7 @@ export const createProblem = (payload) => api.post('/problems', payload);
 export const listProblems = (params) => api.get('/problems', { params });
 export const getProblem = (id) => api.get(`/problems/${id}`);
 export const deleteProblem = (id) => api.delete(`/problems/${id}`);
+export const submitSolution = (problemId, payload) => api.post(`/problems/${problemId}/submit`, payload);
 export const createContest = (payload) => api.post('/contests', payload);
 export const listContests = (params) => api.get('/contests', { params });
 export const getContest = (id) => api.get(`/contests/${id}`);

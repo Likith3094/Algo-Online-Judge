@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
-import { getProblem } from '../api/auth';
+import { getProblem, submitSolution } from '../api/auth';
 
 const codeTemplates = {
   cpp: `#include <iostream>
@@ -73,8 +73,52 @@ function ProblemDetails() {
     setCode(codeTemplates[lang]);
   };
 
-  const simulateSubmit = () => {
-    setConsoleLogs('> Code submission and evaluation engine is currently under development.\n> Real-time compilation and isolated sandboxed execution will be implemented in the next phase.');
+  const simulateSubmit = async () => {
+    setSubmitting(true);
+    setConsoleLogs('> Submitting code to Docker sandbox...\n');
+    try {
+      const response = await submitSolution(id, {
+        code,
+        language,
+        contestId,
+      });
+
+      if (response.data?.success) {
+        const { verdict, executionTime, failedTestCase } = response.data;
+        let logs = `> Execution Finished.\n> Verdict: ${verdict}\n> Max Execution Time: ${executionTime} ms\n`;
+        if (verdict === 'AC') {
+          logs += `> Status: SUCCESS. All test cases passed! `;
+        } else if (verdict === 'WA') {
+          logs += `> Status: FAILED. Wrong Answer on Test Case ${failedTestCase.index}.\n`;
+          if (failedTestCase.input) {
+            logs += `> Input:\n${failedTestCase.input}\n`;
+          }
+          if (failedTestCase.expected) {
+            logs += `> Expected Output:\n${failedTestCase.expected}\n`;
+          }
+          if (failedTestCase.actual) {
+            logs += `> Actual Output:\n${failedTestCase.actual}\n`;
+          }
+        } else if (verdict === 'TLE') {
+          logs += `> Status: TIMEOUT. Time Limit Exceeded (TLE) on Test Case ${failedTestCase.index}.\n`;
+        } else if (verdict === 'CE') {
+          logs += `> Status: COMPILATION ERROR on Test Case ${failedTestCase.index}.\n`;
+          if (failedTestCase.error) {
+            logs += `> Error Details:\n${failedTestCase.error}\n`;
+          }
+        } else if (verdict === 'RE') {
+          logs += `> Status: RUNTIME ERROR on Test Case ${failedTestCase.index}.\n`;
+          if (failedTestCase.error) {
+            logs += `> Error Details:\n${failedTestCase.error}\n`;
+          }
+        }
+        setConsoleLogs(logs);
+      }
+    } catch (err) {
+      setConsoleLogs(`> Error: ${err.response?.data?.message || err.message || 'Submission failed.'}`);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (loading) {
@@ -172,7 +216,7 @@ function ProblemDetails() {
           <div className="editor-card">
             {/* Header controls */}
             <div className="editor-header">
-              <div className="editor-title">code_compiler.cpp</div>
+              <div className="editor-title">{language === 'cpp' ? 'code.cpp' : language === 'python' ? 'code.py' : 'code.java'}</div>
               <select className="editor-select" value={language} onChange={handleLanguageChange}>
                 <option value="cpp">C++ (GCC 11)</option>
                 <option value="python">Python (3.10)</option>
