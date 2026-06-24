@@ -41,9 +41,10 @@ export const AuthProvider = ({ children }) => {
       (error) => {
         if (error.response && error.response.status === 401) {
           clearLocalAuth();
-          // Avoid redirect loop if already on the login/register page
           const path = window.location.pathname;
-          if (path !== '/login' && path !== '/register') {
+          const publicPaths = ['/login', '/register', '/', '/dashboard', '/problems', '/contests'];
+          const isPublicPage = publicPaths.some(p => path === p || path.startsWith('/problems/') || path.startsWith('/contests/'));
+          if (!isPublicPage) {
             window.location.href = '/login';
           }
         }

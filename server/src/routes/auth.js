@@ -217,4 +217,131 @@ router.get('/me', authenticateToken, async (req, res) => {
   }
 });
 
+router.get('/profile', authenticateToken, async (req, res) => {
+  try {
+    const User = require('../models/User');
+    const Submission = require('../models/Submission');
+    const Problem = require('../models/Problem');
+
+    const userObj = await User.findById(req.user.id);
+    if (!userObj) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    // Get total submissions count for the user
+    const totalSubmissions = await Submission.countDocuments({ userId: req.user.id });
+
+    // Get number of solved questions (distinct problems with AC verdict)
+    const solvedProblemIds = await Submission.distinct('problemId', {
+      userId: req.user.id,
+      verdict: 'AC'
+    });
+    const totalSolved = solvedProblemIds.length;
+
+    // Get difficulty breakdowns for solved problems
+    const solvedProblems = await Problem.find({ _id: { $in: solvedProblemIds } }, 'difficulty');
+    const difficultyStats = {
+      Easy: 0,
+      Medium: 0,
+      Hard: 0
+    };
+    solvedProblems.forEach(p => {
+      if (difficultyStats[p.difficulty] !== undefined) {
+        difficultyStats[p.difficulty]++;
+      }
+    });
+
+    // Get total unique problems submitted to
+    const totalAttempted = (await Submission.distinct('problemId', { userId: req.user.id })).length;
+
+    // Calculate submission verdicts breakdown
+    const submissions = await Submission.find({ userId: req.user.id }, 'verdict');
+    const verdictStats = { AC: 0, WA: 0, TLE: 0, RE: 0, CE: 0 };
+    submissions.forEach(sub => {
+      if (verdictStats[sub.verdict] !== undefined) {
+        verdictStats[sub.verdict]++;
+      }
+    });
+
+    // Get user's contest registrations and statuses
+    const Contest = require('../models/Contest');
+    const registeredContests = await Contest.find({ registeredUsers: req.user.id }, 'title startTime endTime');
+    
+    const now = new Date();
+    const contestHistory = registeredContests.map(c => {
+      let status = 'Upcoming';
+      if (now >= new Date(c.startTime) && now <= new Date(c.endTime)) {
+        status = 'Ongoing';
+      } else if (now > new Date(c.endTime)) {
+        status = 'Completed';
+      }
+      return {
+        id: c._id,
+        title: c.title,
+        startTime: c.startTime,
+        endTime: c.endTime,
+        status
+      };
+    });
+
+    // If user is a creator, aggregate creator-specific metrics
+    let creatorStats = null;
+    if (userObj.role === 'creator') {
+      const createdContests = await Contest.find({ creatorId: req.user.id })
+        .populate('problems', 'title')
+        .select('title startTime endTime registeredUsers');
+      
+      const authoredProblems = await Problem.find({ authorId: req.user.id }, 'title difficulty points createdAt');
+
+      creatorStats = {
+        contestsCreatedCount: createdContests.length,
+        problemsAuthoredCount: authoredProblems.length,
+        contests: createdContests.map(c => {
+          let status = 'Upcoming';
+          if (now >= new Date(c.startTime) && now <= new Date(c.endTime)) {
+            status = 'Ongoing';
+          } else if (now > new Date(c.endTime)) {
+            status = 'Completed';
+          }
+          return {
+            id: c._id,
+            title: c.title,
+            startTime: c.startTime,
+            endTime: c.endTime,
+            registrationsCount: c.registeredUsers?.length || 0,
+            problemsCount: c.problems?.length || 0,
+            status
+          };
+        }),
+        problems: authoredProblems
+      };
+    }
+
+    return res.json({
+      success: true,
+      profile: {
+        username: userObj.username,
+        email: userObj.email,
+        role: userObj.role,
+        createdAt: userObj.createdAt,
+        stats: {
+          totalSubmissions,
+          totalSolved,
+          totalAttempted,
+          difficulty: difficultyStats,
+          verdicts: verdictStats,
+          contests: contestHistory,
+          creator: creatorStats
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Fetch profile stats error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Could not fetch profile statistics.'
+    });
+  }
+});
+
 module.exports = router;

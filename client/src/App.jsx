@@ -7,6 +7,7 @@ import CreatorDashboard from './pages/CreatorDashboard';
 import ContestDetails from './pages/ContestDetails';
 import ProblemDetails from './pages/ProblemDetails';
 import ProblemsList from './pages/ProblemsList';
+import Profile from './pages/Profile';
 import { useAuth } from './context/AuthContext';
 
 // Protected Route Guard for general authenticated users (Participants or Creators)
@@ -65,36 +66,18 @@ function App() {
           <Route path="/login" element={<Auth />} />
           <Route path="/register" element={<Auth />} />
 
-          {/* User Protected Routes */}
+          {/* Public Browsing Routes */}
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/problems" element={<ProblemsList />} />
+          <Route path="/contests/:id" element={<ContestDetails />} />
+          <Route path="/problems/:id" element={<ProblemDetails />} />
+
+          {/* Auth-Required Routes */}
           <Route
-            path="/dashboard"
+            path="/profile"
             element={
               <ProtectedRoute>
-                <Dashboard />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/problems"
-            element={
-              <ProtectedRoute>
-                <ProblemsList />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/contests/:id"
-            element={
-              <ProtectedRoute>
-                <ContestDetails />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/problems/:id"
-            element={
-              <ProtectedRoute>
-                <ProblemDetails />
+                <Profile />
               </ProtectedRoute>
             }
           />

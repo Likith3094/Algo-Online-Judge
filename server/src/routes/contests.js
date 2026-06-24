@@ -2,15 +2,12 @@ const express = require('express');
 const mongoose = require('mongoose');
 const Contest = require('../models/Contest');
 const Submission = require('../models/Submission');
-const { authenticateToken, requireRole } = require('../middleware/auth');
+const { authenticateToken, requireRole, optionalAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Apply protection to all routes in this file
-router.use(authenticateToken);
-
 // GET / - List all contests with optional status filter
-router.get('/', async (req, res) => {
+router.get('/', optionalAuth, async (req, res) => {
   try {
     const { status, limit = 10, skip = 0 } = req.query;
     const now = new Date();
@@ -34,7 +31,7 @@ router.get('/', async (req, res) => {
 
     const sanitizedContests = contests.map((contest) => {
       const contestObj = contest.toObject();
-      const isCreator = req.user && req.user.id === contest.creatorId.toString();
+      const isCreator = req.user && req.user.id === contest.creatorId._id.toString();
       if (!isCreator && now < contest.startTime) {
         contestObj.problems = [];
       }
@@ -62,7 +59,7 @@ router.get('/', async (req, res) => {
 });
 
 // GET /:id - Get full contest details (including dynamic leaderboard calculations)
-router.get('/:id', async (req, res) => {
+router.get('/:id', optionalAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -176,7 +173,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /:id/register - Register for a contest (User only)
-router.post('/:id/register', requireRole('user'), async (req, res) => {
+router.post('/:id/register', authenticateToken, requireRole('user'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -233,7 +230,7 @@ router.post('/:id/register', requireRole('user'), async (req, res) => {
 });
 
 // POST / - Creates a contest configuration profile (Creator only)
-router.post('/', requireRole('creator'), async (req, res) => {
+router.post('/', authenticateToken, requireRole('creator'), async (req, res) => {
   try {
     const { title, description, startTime, endTime, problems } = req.body;
 
@@ -271,7 +268,7 @@ router.post('/', requireRole('creator'), async (req, res) => {
 });
 
 // PUT /:id - Creator-only update endpoint (Creator only)
-router.put('/:id', requireRole('creator'), async (req, res) => {
+router.put('/:id', authenticateToken, requireRole('creator'), async (req, res) => {
   try {
     const { id } = req.params;
     const { title, description, startTime, endTime, problems } = req.body;
@@ -323,7 +320,7 @@ router.put('/:id', requireRole('creator'), async (req, res) => {
 });
 
 // DELETE /:id - Creator-only deletion endpoint (Creator only)
-router.delete('/:id', requireRole('creator'), async (req, res) => {
+router.delete('/:id', authenticateToken, requireRole('creator'), async (req, res) => {
   try {
     const { id } = req.params;
 

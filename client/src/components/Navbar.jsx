@@ -1,8 +1,10 @@
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 
 function Navbar() {
   const { user, logout } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const location = useLocation();
 
   const isActive = (path) => location.pathname === path;
@@ -39,12 +41,15 @@ function Navbar() {
       </ul>
 
       <div className="nav-actions">
+        <button className="theme-toggle-btn" onClick={toggleTheme} title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}>
+          {theme === 'dark' ? '☀️' : '🌙'}
+        </button>
         {user ? (
           <>
-            <div className={`user-badge role-${user.role}`}>
+            <Link to="/profile" className={`user-badge role-${user.role}`} style={{ textDecoration: 'none', cursor: 'pointer' }}>
               <span>●</span>
               {user.username} ({user.role === 'creator' ? 'Creator' : 'User'})
-            </div>
+            </Link>
             <button className="btn-signout" onClick={logout}>
               Sign Out
             </button>

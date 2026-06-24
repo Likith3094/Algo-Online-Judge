@@ -1,6 +1,8 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
+import CodeEditor from '../components/CodeEditor';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
-import { getProblem, submitSolution } from '../api/auth';
+import { getProblem, submitSolution, runSolution } from '../api/auth';
+import { useAuth } from '../context/AuthContext';
 
 const codeTemplates = {
   cpp: `#include <iostream>
@@ -38,17 +40,68 @@ function ProblemDetails() {
   const { id } = useParams();
   const [searchParams] = useSearchParams();
   const contestId = searchParams.get('contest');
+  const { user } = useAuth();
 
   const [problem, setProblem] = useState(null);
   const [samples, setSamples] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [status, setStatus] = useState('unsolved');
   
   // Editor state
   const [language, setLanguage] = useState('cpp');
   const [code, setCode] = useState(codeTemplates.cpp);
-  const [consoleLogs, setConsoleLogs] = useState('Console ready. Write code and hit "Submit Solution".');
+  const [consoleLogs, setConsoleLogs] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  // Theme layout workspace states
+  const [leftWidthPercent, setLeftWidthPercent] = useState(50); // Width of left panel (out of 100)
+  const [customInputEnabled, setCustomInputEnabled] = useState(false);
+  const [customInput, setCustomInput] = useState('');
+  const [runningCustom, setRunningCustom] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleDragStart = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
+
+  useEffect(() => {
+    const handleDragMove = (e) => {
+      if (!isDragging) return;
+      const detailLayout = document.querySelector('.detail-layout');
+      if (detailLayout) {
+        const rect = detailLayout.getBoundingClientRect();
+        const offset = e.clientX - rect.left;
+        const percentage = (offset / rect.width) * 100;
+        
+        // Constrain percentage between 20% and 80%
+        if (percentage >= 20 && percentage <= 80) {
+          setLeftWidthPercent(percentage);
+        }
+      }
+    };
+
+    const handleDragEnd = () => {
+      if (isDragging) {
+        setIsDragging(false);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    };
+
+    if (isDragging) {
+      window.addEventListener('pointermove', handleDragMove);
+      window.addEventListener('pointerup', handleDragEnd);
+    }
+
+    return () => {
+      window.removeEventListener('pointermove', handleDragMove);
+      window.removeEventListener('pointerup', handleDragEnd);
+    };
+  }, [isDragging]);
 
   useEffect(() => {
     const loadProblem = async () => {
@@ -73,9 +126,39 @@ function ProblemDetails() {
     setCode(codeTemplates[lang]);
   };
 
+  const handleRunCustom = async () => {
+    setRunningCustom(true);
+    setConsoleLogs('> Compiling & Running code ...\n');
+    try {
+      const response = await runSolution(id, {
+        code,
+        language,
+        customInput,
+      });
+
+      if (response.data?.success) {
+        const { verdict, output, error: execError } = response.data;
+        let logs = '';
+        if (verdict === 'Run Successful') {
+          logs = `Output:\n${output || '[No Output]'}\n`;
+        } else {
+          logs = `${verdict}\n`;
+          if (execError) {
+            logs += `Error:\n${execError}\n`;
+          }
+        }
+        setConsoleLogs(logs);
+      }
+    } catch (err) {
+      setConsoleLogs(`> Error: ${err.response?.data?.message || err.message || 'Run failed.'}`);
+    } finally {
+      setRunningCustom(false);
+    }
+  };
+
   const simulateSubmit = async () => {
     setSubmitting(true);
-    setConsoleLogs('> Submitting code to Docker sandbox...\n');
+    setConsoleLogs('> Submitting...\n');
     try {
       const response = await submitSolution(id, {
         code,
@@ -84,32 +167,29 @@ function ProblemDetails() {
       });
 
       if (response.data?.success) {
-        const { verdict, executionTime, failedTestCase } = response.data;
-        let logs = `> Execution Finished.\n> Verdict: ${verdict}\n> Max Execution Time: ${executionTime} ms\n`;
+        const { verdict, failedTestCase } = response.data;
+        let logs = '';
         if (verdict === 'AC') {
-          logs += `> Status: SUCCESS. All test cases passed! `;
+          logs = `Accepted\nAll test cases passed!`;
         } else if (verdict === 'WA') {
-          logs += `> Status: FAILED. Wrong Answer on Test Case ${failedTestCase.index}.\n`;
-          if (failedTestCase.input) {
-            logs += `> Input:\n${failedTestCase.input}\n`;
-          }
+          logs = `Wrong Answer\n\n`;
           if (failedTestCase.expected) {
-            logs += `> Expected Output:\n${failedTestCase.expected}\n`;
+            logs += `Expected Output:\n${failedTestCase.expected}\n\n`;
           }
           if (failedTestCase.actual) {
-            logs += `> Actual Output:\n${failedTestCase.actual}\n`;
+            logs += `Actual Output:\n${failedTestCase.actual}\n`;
           }
         } else if (verdict === 'TLE') {
-          logs += `> Status: TIMEOUT. Time Limit Exceeded (TLE) on Test Case ${failedTestCase.index}.\n`;
+          logs = `Time Limit Exceeded\n`;
         } else if (verdict === 'CE') {
-          logs += `> Status: COMPILATION ERROR on Test Case ${failedTestCase.index}.\n`;
+          logs = `Compilation Error\n\n`;
           if (failedTestCase.error) {
-            logs += `> Error Details:\n${failedTestCase.error}\n`;
+            logs += `${failedTestCase.error}\n`;
           }
         } else if (verdict === 'RE') {
-          logs += `> Status: RUNTIME ERROR on Test Case ${failedTestCase.index}.\n`;
+          logs = `Runtime Error\n\n`;
           if (failedTestCase.error) {
-            logs += `> Error Details:\n${failedTestCase.error}\n`;
+            logs += `${failedTestCase.error}\n`;
           }
         }
         setConsoleLogs(logs);
@@ -120,6 +200,37 @@ function ProblemDetails() {
       setSubmitting(false);
     }
   };
+
+  // Solve button handler – runs solution against default tests (no custom input)
+  const handleSolve = async () => {
+    setSubmitting(true);
+    setConsoleLogs('> Solving using default test cases...\n');
+    try {
+      const response = await runSolution(id, {
+        code,
+        language,
+        // No customInput field means backend will use built‑in sample tests
+      });
+      if (response.data?.success) {
+        const { verdict, output, error: execError } = response.data;
+        let logs = '';
+        if (verdict === 'Run Successful') {
+          logs = `Output:\n${output || '[No Output]'}\n`;
+        } else {
+          logs = `${verdict}\n`;
+          if (execError) {
+            logs += `Error:\n${execError}\n`;
+          }
+        }
+        setConsoleLogs(logs);
+      }
+    } catch (err) {
+      setConsoleLogs(`> Error: ${err.response?.data?.message || err.message || 'Solve failed.'}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
 
   if (loading) {
     return (
@@ -145,6 +256,8 @@ function ProblemDetails() {
   const lineCount = code.split('\n').length;
   const lineNumbers = Array.from({ length: Math.max(lineCount, 15) }, (_, i) => i + 1);
 
+  const isBusy = submitting || runningCustom;
+
   return (
     <div className="problem-details-container">
       {/* Back button */}
@@ -157,7 +270,7 @@ function ProblemDetails() {
         </Link>
       </div>
 
-      <div className="detail-layout">
+      <div className="detail-layout" style={{ gridTemplateColumns: `${leftWidthPercent}% 12px calc(${100 - leftWidthPercent}% - 12px)` }}>
         {/* Left Side: Problem Description */}
         <div className="problem-panel">
           <div className="panel-card">
@@ -211,12 +324,16 @@ function ProblemDetails() {
           </div>
         </div>
 
+        {/* Draggable Divider resizer */}
+        <div className={`workspace-resizer ${isDragging ? 'dragging' : ''}`} onPointerDown={handleDragStart} />
+
         {/* Right Side: Interactive IDE Code Editor */}
         <div className="editor-panel">
           <div className="editor-card">
             {/* Header controls */}
             <div className="editor-header">
               <div className="editor-title">{language === 'cpp' ? 'code.cpp' : language === 'python' ? 'code.py' : 'code.java'}</div>
+              
               <select className="editor-select" value={language} onChange={handleLanguageChange}>
                 <option value="cpp">C++ (GCC 11)</option>
                 <option value="python">Python (3.10)</option>
@@ -224,37 +341,76 @@ function ProblemDetails() {
               </select>
             </div>
 
-            {/* Editor Textarea with line numbers */}
+            {/* Editor Textarea with CodeMirror */}
             <div className="editor-body">
-              <div className="editor-lines">
-                {lineNumbers.map((num) => (
-                  <div key={num}>{num}</div>
-                ))}
-              </div>
-              <textarea
-                className="editor-textarea"
+              <CodeEditor
                 value={code}
-                onChange={(e) => setCode(e.target.value)}
-                disabled={submitting}
-                spellCheck="false"
+                onChange={setCode}
+                language={language}
+                readOnly={isBusy}
+                height="100%"
               />
+            </div>
+
+            {/* Custom Input Block */}
+            <div className="editor-custom-input-section" style={{ padding: '16px 20px', borderTop: '1px solid var(--border)', background: 'var(--editor-console-bg)' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: '600', userSelect: 'none', color: 'var(--text)' }}>
+                <input 
+                  type="checkbox" 
+                  checked={customInputEnabled} 
+                  onChange={(e) => setCustomInputEnabled(e.target.checked)} 
+                  style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: 'var(--primary)' }}
+                />
+                Use Custom Test Case Input
+              </label>
+              
+              {customInputEnabled && (
+                <textarea
+                  className="code-block"
+                  style={{ width: '100%', height: '80px', marginTop: '10px', padding: '10px', fontSize: '13px', resize: 'vertical', fontFamily: 'var(--font-mono)' }}
+                  placeholder="Enter custom input data here..."
+                  value={customInput}
+                  onChange={(e) => setCustomInput(e.target.value)}
+                  disabled={isBusy}
+                />
+              )}
             </div>
 
             {/* Actions panel */}
             <div className="editor-footer">
-              <button
-                className="btn-primary"
-                onClick={simulateSubmit}
-                disabled={submitting}
-                style={{ minWidth: '150px' }}
-              >
-                {submitting ? 'Running...' : 'Submit Solution'}
-              </button>
+              {user ? (
+                <>
+                  <button
+                    className="btn-primary"
+                    onClick={handleRunCustom}
+                    disabled={isBusy}
+                    style={{ marginRight: 'auto', minWidth: '110px' }}
+                  >
+                    {runningCustom ? 'Running...' : 'Run Code'}
+                  </button>
+
+                  <button
+                    className="btn-primary"
+                    onClick={simulateSubmit}
+                    disabled={isBusy}
+                    style={{ minWidth: '150px' }}
+                  >
+                    {submitting ? 'Submitting...' : 'Submit Solution'}
+                  </button>
+                </>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%', justifyContent: 'center' }}>
+                  <span style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>Sign in to run and submit your code</span>
+                  <Link to="/login" className="btn-primary" style={{ padding: '10px 28px', fontSize: '14px', textDecoration: 'none' }}>
+                    Sign In
+                  </Link>
+                </div>
+              )}
             </div>
 
             {/* Simulation Terminal Console */}
             <div className="editor-console">
-              <div className="console-title">Execution Logs</div>
+              <div className="console-title">Output</div>
               <pre className="console-output">{consoleLogs}</pre>
             </div>
           </div>

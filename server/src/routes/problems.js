@@ -11,6 +11,19 @@ const { generateInputFile } = require('../../generateinputfile');
 const { executeCpp } = require('../../executecpp');
 const { executePy } = require('../../executepy');
 const { authenticateToken, requireRole, optionalAuth } = require('../middleware/auth');
+const rateLimit = require('express-rate-limit');
+
+// Rate limiter for execution and submission endpoints to prevent DoS via Docker containers
+const executionLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 15, // limit each IP to 15 execution requests per minute
+  message: {
+    success: false,
+    message: 'Too many compilation requests. Please wait a minute before trying again.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 const router = express.Router();
 
@@ -132,9 +145,39 @@ router.get('/', optionalAuth, async (req, res) => {
 
     const total = await Problem.countDocuments(filter);
 
+    let solvedProblemIds = new Set();
+    let attemptedProblemIds = new Set();
+
+    if (req.user) {
+      const submissions = await Submission.find({
+        userId: req.user.id,
+        problemId: { $in: problems.map((p) => p._id) },
+      }).select('problemId verdict');
+
+      submissions.forEach((sub) => {
+        const pIdStr = sub.problemId.toString();
+        if (sub.verdict === 'AC') {
+          solvedProblemIds.add(pIdStr);
+        } else {
+          attemptedProblemIds.add(pIdStr);
+        }
+      });
+    }
+
+    const problemsWithStatus = problems.map((problem) => {
+      const pIdStr = problem._id.toString();
+      const probObj = problem.toObject();
+      probObj.status = solvedProblemIds.has(pIdStr)
+        ? 'solved'
+        : attemptedProblemIds.has(pIdStr)
+        ? 'attempted'
+        : 'unsolved';
+      return probObj;
+    });
+
     return res.json({
       success: true,
-      problems,
+      problems: problemsWithStatus,
       pagination: {
         total,
         limit: parseInt(limit, 10),
@@ -208,10 +251,26 @@ router.get('/:id', optionalAuth, async (req, res) => {
 
     const testCases = await TestCase.find({ problemId: id, isSample: true });
 
+    let userStatus = 'unsolved';
+    if (req.user) {
+      const submissions = await Submission.find({
+        userId: req.user.id,
+        problemId: problem._id,
+      }).select('verdict');
+
+      const hasAC = submissions.some((sub) => sub.verdict === 'AC');
+      if (hasAC) {
+        userStatus = 'solved';
+      } else if (submissions.length > 0) {
+        userStatus = 'attempted';
+      }
+    }
+
     return res.json({
       success: true,
       problem: problem.toObject(),
       sampleTestCases: testCases,
+      status: userStatus,
     });
   } catch (error) {
     console.error('Fetch problem error:', error);
@@ -223,7 +282,7 @@ router.get('/:id', optionalAuth, async (req, res) => {
 });
 
 // POST /:id/submit - Execute user code against test cases in Docker sandbox
-router.post('/:id/submit', authenticateToken, async (req, res) => {
+router.post('/:id/submit', authenticateToken, executionLimiter, async (req, res) => {
   const { id } = req.params;
   const { code, language, contestId } = req.body;
 
@@ -310,6 +369,8 @@ router.post('/:id/submit', authenticateToken, async (req, res) => {
       } catch (err) {
         if (err === 'Time Limit Exceeded (TLE)') {
           verdict = 'TLE';
+        } else if (err === 'Output Limit Exceeded (OLE)') {
+          verdict = 'OLE';
         } else {
           const errorMsg = typeof err === 'string' ? err : (err.stderr || err.message || '');
           if (language === 'cpp' && errorMsg.includes('error:')) {
@@ -320,28 +381,29 @@ router.post('/:id/submit', authenticateToken, async (req, res) => {
             verdict = 'RE';
           }
         }
+        let rawError = typeof err === 'string' ? err : (err.stderr || err.message || 'Execution error');
+        // Clean up paths like /app/codes/filename.cpp, tmpfs executable paths, and build directories
+        let cleanError = rawError
+          .replace(/\/app\/codes\/[a-f0-9\-]+\.(cpp|py)/g, 'solution.$1')
+          .replace(/\/app\/codes\//g, '')
+          .replace(/\/tmp\/[a-f0-9\-]+\.out/g, 'solution.out')
+          .replace(/\/app\/inputs\/[a-f0-9\-]+\.txt/g, 'input.txt')
+          .replace(/\/home\/[a-z0-9]+\/aports\/[^\s]+?\/libstdc\+\+-v3\/include\//g, '');
         failedTestCase = {
           index: i + 1,
           input: tc.isSample ? tc.inputData : null,
           expected: tc.isSample ? tc.expectedOutput : null,
-          error: typeof err === 'string' ? err : (err.stderr || err.message || 'Execution error'),
+          error: cleanError,
           isSample: tc.isSample || false,
         };
         break;
       } finally {
         try {
-          if (filepath && fs.existsSync(filepath)) {
-            fs.unlinkSync(filepath);
+          if (filepath) {
+            await fs.promises.access(filepath).then(() => fs.promises.unlink(filepath)).catch(() => {});
           }
-          if (inputPath && fs.existsSync(inputPath)) {
-            fs.unlinkSync(inputPath);
-          }
-          if (filepath && language === 'cpp') {
-            const jobId = path.basename(filepath).split('.')[0];
-            const outPath = path.join(__dirname, '..', '..', 'outputs', `${jobId}.out`);
-            if (fs.existsSync(outPath)) {
-              fs.unlinkSync(outPath);
-            }
+          if (inputPath) {
+            await fs.promises.access(inputPath).then(() => fs.promises.unlink(inputPath)).catch(() => {});
           }
         } catch (cleanupErr) {
           console.error('File cleanup error:', cleanupErr);
@@ -375,6 +437,112 @@ router.post('/:id/submit', authenticateToken, async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Internal server error during code execution.',
+    });
+  }
+});
+
+// POST /:id/run - Compile and run user code against a custom input in Docker sandbox
+router.post('/:id/run', authenticateToken, executionLimiter, async (req, res) => {
+  const { id } = req.params;
+  const { code, language, customInput } = req.body;
+
+  if (!code || !language) {
+    return res.status(400).json({
+      success: false,
+      message: 'Code and language are required.',
+    });
+  }
+
+  if (language !== 'cpp' && language !== 'python') {
+    return res.status(400).json({
+      success: false,
+      message: 'Currently, only C++ and Python code run are supported with Docker sandboxing.',
+    });
+  }
+
+  try {
+    const problem = await Problem.findById(id);
+    if (!problem) {
+      return res.status(404).json({
+        success: false,
+        message: 'Problem not found.',
+      });
+    }
+
+    let filepath;
+    let inputPath;
+    let stdout = '';
+    let runTime = 0;
+    let runError = null;
+    let verdict = 'Run Successful';
+
+    try {
+      const fileExt = language === 'cpp' ? 'cpp' : 'py';
+      filepath = await generateFile(fileExt, code);
+      inputPath = await generateInputFile(customInput || '');
+
+      const timeLimit = problem.timeLimit || 2;
+      const memoryLimit = problem.memoryLimit || 256;
+
+      const startTime = Date.now();
+      if (language === 'cpp') {
+        stdout = await executeCpp(filepath, inputPath, timeLimit, memoryLimit);
+      } else {
+        stdout = await executePy(filepath, inputPath, timeLimit, memoryLimit);
+      }
+      runTime = Date.now() - startTime;
+    } catch (err) {
+      if (err === 'Time Limit Exceeded (TLE)') {
+        verdict = 'TLE';
+        runError = 'Time Limit Exceeded (TLE)';
+      } else if (err === 'Output Limit Exceeded (OLE)') {
+        verdict = 'OLE';
+        runError = 'Output Limit Exceeded (OLE)';
+      } else {
+        const errorMsg = typeof err === 'string' ? err : (err.stderr || err.message || '');
+        if (language === 'cpp' && errorMsg.includes('error:')) {
+          verdict = 'Compilation Error';
+        } else if (language === 'python' && (errorMsg.includes('SyntaxError') || errorMsg.includes('IndentationError') || errorMsg.includes('TabError'))) {
+          verdict = 'Compilation Error';
+        } else {
+          verdict = 'Runtime Error';
+        }
+        let rawError = typeof err === 'string' ? err : (err.stderr || err.message || 'Execution error');
+        // Clean up paths like /app/codes/filename.cpp, tmpfs executable paths, and build directories
+        runError = rawError
+          .replace(/\/app\/codes\/[a-f0-9\-]+\.(cpp|py)/g, 'solution.$1')
+          .replace(/\/app\/codes\//g, '')
+          .replace(/\/tmp\/[a-f0-9\-]+\.out/g, 'solution.out')
+          .replace(/\/app\/inputs\/[a-f0-9\-]+\.txt/g, 'input.txt')
+          .replace(/\/home\/[a-z0-9]+\/aports\/[^\s]+?\/libstdc\+\+-v3\/include\//g, '');
+      }
+    } finally {
+      // Cleanup files
+      try {
+        if (filepath) {
+          await fs.promises.access(filepath).then(() => fs.promises.unlink(filepath)).catch(() => {});
+        }
+        if (inputPath) {
+          await fs.promises.access(inputPath).then(() => fs.promises.unlink(inputPath)).catch(() => {});
+        }
+      } catch (cleanupErr) {
+        console.error('File cleanup error:', cleanupErr);
+      }
+    }
+
+    return res.json({
+      success: true,
+      verdict,
+      executionTime: runTime,
+      output: stdout,
+      error: runError,
+    });
+
+  } catch (error) {
+    console.error('Run execution error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error during custom run.',
     });
   }
 });

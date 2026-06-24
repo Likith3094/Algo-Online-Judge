@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { listProblems } from '../api/auth';
+import { useAuth } from '../context/AuthContext';
 
 function ProblemsList() {
+  const { user } = useAuth();
   const [problems, setProblems] = useState([]);
   const [filteredProblems, setFilteredProblems] = useState([]);
   const [activeTab, setActiveTab] = useState('all'); // all, Easy, Medium, Hard
@@ -52,6 +54,26 @@ function ProblemsList() {
 
     setFilteredProblems(result);
   }, [searchQuery, activeTab, problems]);
+
+  const getStatusIcon = (status) => {
+    if (!user) return <span style={{ color: 'var(--text-muted)', opacity: 0.3 }}>-</span>;
+    switch (status) {
+      case 'solved':
+        return (
+          <span className="status-solved" title="Solved" style={{ color: '#10b981', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+            ✔
+          </span>
+        );
+      case 'attempted':
+        return (
+          <span className="status-attempted" title="Attempted" style={{ color: '#f59e0b', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+            ●
+          </span>
+        );
+      default:
+        return <span style={{ color: 'var(--text-muted)', opacity: 0.3 }}>-</span>;
+    }
+  };
 
   return (
     <div className="problems-list-container">
@@ -107,6 +129,7 @@ function ProblemsList() {
           <table className="problems-table">
             <thead>
               <tr>
+                <th style={{ width: '80px', textAlign: 'center' }}>Status</th>
                 <th>Problem Title</th>
                 <th>Difficulty</th>
                 <th>Points Value</th>
@@ -117,6 +140,7 @@ function ProblemsList() {
             <tbody>
               {filteredProblems.map((problem) => (
                 <tr key={problem._id}>
+                  <td style={{ textAlign: 'center' }}>{getStatusIcon(problem.status)}</td>
                   <td style={{ fontWeight: '600' }}>{problem.title}</td>
                   <td>
                     <span className={`difficulty-badge difficulty-${problem.difficulty}`}>

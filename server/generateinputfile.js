@@ -13,7 +13,7 @@ const generateInputFile = async (input) => {
     const jobID = crypto.randomUUID();
     const input_filename = `${jobID}.txt`;
     const input_filePath = path.join(dirInputs, input_filename);
-    await fs.writeFileSync(input_filePath, input);
+    await fs.promises.writeFile(input_filePath, input);
     return input_filePath;
 };
 
