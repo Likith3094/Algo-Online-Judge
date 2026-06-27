@@ -12,14 +12,17 @@ const executePy = (filepath, inputPath, timeLimit = 2, memoryLimit = 256) => {
       "--rm",
       "--init",
       "--network", "none",
+      "--cap-drop=ALL",
+      "--security-opt=no-new-privileges",
       `--memory=${memoryLimit}m`,
       "--cpus=0.5",
       "--pids-limit=100",
       "--read-only",
+      "--user", "judgeuser",
       "--tmpfs", "/tmp:rw,exec,size=64m",
       "-v", `${rootDir}/codes/${codeFile}:/app/codes/${codeFile}:ro`,
       "-v", `${rootDir}/inputs/${inputFile}:/app/inputs/${inputFile}:ro`,
-      "judge-sandbox",
+      process.env.DOCKER_IMAGE_NAME || "judge-sandbox",
       "timeout", `${timeLimit}s`,
       "bash", "-c", `python3 /app/codes/${codeFile} < /app/inputs/${inputFile}`
     ];

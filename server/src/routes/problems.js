@@ -1,15 +1,9 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const fs = require('fs');
-const path = require('path');
 const Problem = require('../models/Problem');
 const TestCase = require('../models/TestCase');
 const Contest = require('../models/Contest');
 const Submission = require('../models/Submission');
-const { generateFile } = require('../../generatefile');
-const { generateInputFile } = require('../../generateinputfile');
-const { executeCpp } = require('../../executecpp');
-const { executePy } = require('../../executepy');
 const { authenticateToken, requireRole, optionalAuth } = require('../middleware/auth');
 const rateLimit = require('express-rate-limit');
 
@@ -66,8 +60,8 @@ router.post('/', authenticateToken, requireRole('creator'), async (req, res) => 
       points,
       authorId: req.user.id,
       isPrivateContestProblem: isPrivateContestProblem === true || isPrivateContestProblem === 'true',
-      timeLimit: Number(timeLimit) || 2,
-      memoryLimit: Number(memoryLimit) || 256,
+      timeLimit: Math.min(Math.max(Number(timeLimit) || 2, 1), 10),
+      memoryLimit: Math.min(Math.max(Number(memoryLimit) || 256, 128), 1024),
     });
 
     await problem.save();
@@ -110,6 +104,8 @@ router.post('/', authenticateToken, requireRole('creator'), async (req, res) => 
 router.get('/', optionalAuth, async (req, res) => {
   try {
     const { difficulty, tags, search, limit = 10, skip = 0 } = req.query;
+    const safeLimitVal = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
+    const safeSkipVal = Math.max(parseInt(skip, 10) || 0, 0);
     const filter = {};
     if (!req.user || req.user.role !== 'creator') {
       filter.isPrivateContestProblem = false;
@@ -131,16 +127,19 @@ router.get('/', optionalAuth, async (req, res) => {
     }
 
     if (search) {
+      // Escape special regex characters to prevent ReDoS attacks
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.$or = [
-        { title: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } },
+        { title: { $regex: escapedSearch, $options: 'i' } },
+        { description: { $regex: escapedSearch, $options: 'i' } },
       ];
     }
 
     const problems = await Problem.find(filter)
-      .populate('authorId', 'username email')
-      .limit(parseInt(limit, 10))
-      .skip(parseInt(skip, 10))
+      .select('-authorCode')
+      .populate('authorId', 'username')
+      .limit(safeLimitVal)
+      .skip(safeSkipVal)
       .sort({ createdAt: -1 });
 
     const total = await Problem.countDocuments(filter);
@@ -205,7 +204,7 @@ router.get('/:id', optionalAuth, async (req, res) => {
       });
     }
 
-    const problem = await Problem.findById(id).populate('authorId', 'username email');
+    const problem = await Problem.findById(id).populate('authorId', 'username');
 
     if (!problem) {
       return res.status(404).json({
@@ -266,9 +265,16 @@ router.get('/:id', optionalAuth, async (req, res) => {
       }
     }
 
+    const problemObj = problem.toObject();
+    // Only expose authorCode to the problem's author
+    const isAuthor = req.user && problem.authorId && req.user.id === problem.authorId.toString();
+    if (!isAuthor) {
+      delete problemObj.authorCode;
+    }
+
     return res.json({
       success: true,
-      problem: problem.toObject(),
+      problem: problemObj,
       sampleTestCases: testCases,
       status: userStatus,
     });
@@ -287,263 +293,130 @@ router.post('/:id/submit', authenticateToken, executionLimiter, async (req, res)
   const { code, language, contestId } = req.body;
 
   if (!code || !language) {
-    return res.status(400).json({
-      success: false,
-      message: 'Code and language are required.',
-    });
+    return res.status(400).json({ success: false, message: 'Code and language are required.' });
   }
 
-  if (language !== 'cpp' && language !== 'python') {
-    return res.status(400).json({
-      success: false,
-      message: 'Currently, only C++ and Python code submissions are supported with Docker sandboxing.',
-    });
+  if (code.length > 100000) {
+    return res.status(400).json({ success: false, message: 'Code size exceeds the maximum allowed limit (100KB).' });
+  }
+
+  if (language !== 'cpp' && language !== 'python' && language !== 'java') {
+    return res.status(400).json({ success: false, message: 'Currently, only C++, Python, and Java code submissions are supported with Docker sandboxing.' });
+  }
+
+  // Validate contestId if provided
+  if (contestId) {
+    if (!mongoose.Types.ObjectId.isValid(contestId)) {
+      return res.status(400).json({ success: false, message: 'Invalid contest ID.' });
+    }
+    const contest = await Contest.findById(contestId);
+    if (!contest) {
+      return res.status(404).json({ success: false, message: 'Contest not found.' });
+    }
+    const now = new Date();
+    if (now < contest.startTime || now > contest.endTime) {
+      return res.status(400).json({ success: false, message: 'Contest is not currently active.' });
+    }
+    if (!contest.registeredUsers.some(uid => uid.toString() === req.user.id)) {
+      return res.status(403).json({ success: false, message: 'You are not registered for this contest.' });
+    }
   }
 
   try {
     const problem = await Problem.findById(id);
     if (!problem) {
-      return res.status(404).json({
-        success: false,
-        message: 'Problem not found.',
-      });
+      return res.status(404).json({ success: false, message: 'Problem not found.' });
     }
 
-    // Fetch all test cases for this problem
-    let testCases = await TestCase.find({ problemId: id });
-    
-    // If no test cases are registered, fall back to the problem's sample case
-    if (testCases.length === 0) {
-      testCases = [
-        {
-          inputData: problem.sampleInput,
-          expectedOutput: problem.sampleOutput,
-          isSample: true,
-        }
-      ];
-    }
-
-    let verdict = 'AC';
-    let executionTime = 0;
-    let failedTestCase = null;
-
-    for (let i = 0; i < testCases.length; i++) {
-      const tc = testCases[i];
-      let filepath;
-      let inputPath;
-
-      try {
-        const fileExt = language === 'cpp' ? 'cpp' : 'py';
-        filepath = await generateFile(fileExt, code);
-        inputPath = await generateInputFile(tc.inputData);
-
-        const timeLimit = problem.timeLimit || 2;
-        const memoryLimit = problem.memoryLimit || 256;
-
-        const startTime = Date.now();
-        let stdout;
-        if (language === 'cpp') {
-          stdout = await executeCpp(filepath, inputPath, timeLimit, memoryLimit);
-        } else {
-          stdout = await executePy(filepath, inputPath, timeLimit, memoryLimit);
-        }
-        const duration = Date.now() - startTime;
-        if (duration > executionTime) {
-          executionTime = duration;
-        }
-
-        const cleanOutput = stdout.toString().trim().replace(/\r\n/g, '\n').replace(/\n$/, '');
-        const cleanExpected = tc.expectedOutput.toString().trim().replace(/\r\n/g, '\n').replace(/\n$/, '');
-
-        if (cleanOutput !== cleanExpected) {
-          verdict = 'WA';
-          failedTestCase = {
-            index: i + 1,
-            input: tc.isSample ? tc.inputData : null,
-            expected: tc.isSample ? tc.expectedOutput : null,
-            actual: tc.isSample ? cleanOutput : null,
-            isSample: tc.isSample || false,
-          };
-          break;
-        }
-      } catch (err) {
-        if (err === 'Time Limit Exceeded (TLE)') {
-          verdict = 'TLE';
-        } else if (err === 'Output Limit Exceeded (OLE)') {
-          verdict = 'OLE';
-        } else {
-          const errorMsg = typeof err === 'string' ? err : (err.stderr || err.message || '');
-          if (language === 'cpp' && errorMsg.includes('error:')) {
-            verdict = 'CE';
-          } else if (language === 'python' && (errorMsg.includes('SyntaxError') || errorMsg.includes('IndentationError') || errorMsg.includes('TabError'))) {
-            verdict = 'CE';
-          } else {
-            verdict = 'RE';
-          }
-        }
-        let rawError = typeof err === 'string' ? err : (err.stderr || err.message || 'Execution error');
-        // Clean up paths like /app/codes/filename.cpp, tmpfs executable paths, and build directories
-        let cleanError = rawError
-          .replace(/\/app\/codes\/[a-f0-9\-]+\.(cpp|py)/g, 'solution.$1')
-          .replace(/\/app\/codes\//g, '')
-          .replace(/\/tmp\/[a-f0-9\-]+\.out/g, 'solution.out')
-          .replace(/\/app\/inputs\/[a-f0-9\-]+\.txt/g, 'input.txt')
-          .replace(/\/home\/[a-z0-9]+\/aports\/[^\s]+?\/libstdc\+\+-v3\/include\//g, '');
-        failedTestCase = {
-          index: i + 1,
-          input: tc.isSample ? tc.inputData : null,
-          expected: tc.isSample ? tc.expectedOutput : null,
-          error: cleanError,
-          isSample: tc.isSample || false,
-        };
-        break;
-      } finally {
-        try {
-          if (filepath) {
-            await fs.promises.access(filepath).then(() => fs.promises.unlink(filepath)).catch(() => {});
-          }
-          if (inputPath) {
-            await fs.promises.access(inputPath).then(() => fs.promises.unlink(inputPath)).catch(() => {});
-          }
-        } catch (cleanupErr) {
-          console.error('File cleanup error:', cleanupErr);
-        }
-      }
-    }
-
-    const submission = new Submission({
-      userId: req.user.id,
-      problemId: id,
-      contestId: contestId || null,
+    const submissionQueue = require('../queue/submissionQueue');
+    const job = await submissionQueue.add('submit-job', {
+      type: 'submit',
       code,
       language,
-      verdict,
-      executionTime,
-      memoryUsage: 0,
+      problemId: id,
+      userId: req.user.id,
+      contestId: contestId || null
     });
-
-    await submission.save();
 
     return res.json({
       success: true,
-      verdict,
-      executionTime,
-      submission,
-      failedTestCase,
+      message: 'Submission added to queue',
+      jobId: job.id
     });
 
   } catch (error) {
-    console.error('Submission execution error:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Internal server error during code execution.',
-    });
+    console.error('Queue submission error:', error);
+    return res.status(500).json({ success: false, message: 'Internal server error queuing code execution.' });
   }
 });
 
-// POST /:id/run - Compile and run user code against a custom input in Docker sandbox
+// POST /:id/run - Compile and run user code against a custom input in Docker sandbox (Via Queue)
 router.post('/:id/run', authenticateToken, executionLimiter, async (req, res) => {
   const { id } = req.params;
   const { code, language, customInput } = req.body;
 
   if (!code || !language) {
-    return res.status(400).json({
-      success: false,
-      message: 'Code and language are required.',
-    });
+    return res.status(400).json({ success: false, message: 'Code and language are required.' });
   }
 
-  if (language !== 'cpp' && language !== 'python') {
-    return res.status(400).json({
-      success: false,
-      message: 'Currently, only C++ and Python code run are supported with Docker sandboxing.',
-    });
+  if (code.length > 100000) {
+    return res.status(400).json({ success: false, message: 'Code size exceeds the maximum allowed limit.' });
   }
 
   try {
     const problem = await Problem.findById(id);
     if (!problem) {
-      return res.status(404).json({
-        success: false,
-        message: 'Problem not found.',
-      });
+      return res.status(404).json({ success: false, message: 'Problem not found.' });
     }
 
-    let filepath;
-    let inputPath;
-    let stdout = '';
-    let runTime = 0;
-    let runError = null;
-    let verdict = 'Run Successful';
-
-    try {
-      const fileExt = language === 'cpp' ? 'cpp' : 'py';
-      filepath = await generateFile(fileExt, code);
-      inputPath = await generateInputFile(customInput || '');
-
-      const timeLimit = problem.timeLimit || 2;
-      const memoryLimit = problem.memoryLimit || 256;
-
-      const startTime = Date.now();
-      if (language === 'cpp') {
-        stdout = await executeCpp(filepath, inputPath, timeLimit, memoryLimit);
-      } else {
-        stdout = await executePy(filepath, inputPath, timeLimit, memoryLimit);
-      }
-      runTime = Date.now() - startTime;
-    } catch (err) {
-      if (err === 'Time Limit Exceeded (TLE)') {
-        verdict = 'TLE';
-        runError = 'Time Limit Exceeded (TLE)';
-      } else if (err === 'Output Limit Exceeded (OLE)') {
-        verdict = 'OLE';
-        runError = 'Output Limit Exceeded (OLE)';
-      } else {
-        const errorMsg = typeof err === 'string' ? err : (err.stderr || err.message || '');
-        if (language === 'cpp' && errorMsg.includes('error:')) {
-          verdict = 'Compilation Error';
-        } else if (language === 'python' && (errorMsg.includes('SyntaxError') || errorMsg.includes('IndentationError') || errorMsg.includes('TabError'))) {
-          verdict = 'Compilation Error';
-        } else {
-          verdict = 'Runtime Error';
-        }
-        let rawError = typeof err === 'string' ? err : (err.stderr || err.message || 'Execution error');
-        // Clean up paths like /app/codes/filename.cpp, tmpfs executable paths, and build directories
-        runError = rawError
-          .replace(/\/app\/codes\/[a-f0-9\-]+\.(cpp|py)/g, 'solution.$1')
-          .replace(/\/app\/codes\//g, '')
-          .replace(/\/tmp\/[a-f0-9\-]+\.out/g, 'solution.out')
-          .replace(/\/app\/inputs\/[a-f0-9\-]+\.txt/g, 'input.txt')
-          .replace(/\/home\/[a-z0-9]+\/aports\/[^\s]+?\/libstdc\+\+-v3\/include\//g, '');
-      }
-    } finally {
-      // Cleanup files
-      try {
-        if (filepath) {
-          await fs.promises.access(filepath).then(() => fs.promises.unlink(filepath)).catch(() => {});
-        }
-        if (inputPath) {
-          await fs.promises.access(inputPath).then(() => fs.promises.unlink(inputPath)).catch(() => {});
-        }
-      } catch (cleanupErr) {
-        console.error('File cleanup error:', cleanupErr);
-      }
-    }
+    const submissionQueue = require('../queue/submissionQueue');
+    const job = await submissionQueue.add('run-job', {
+      type: 'run',
+      code,
+      language,
+      problemId: id,
+      userId: req.user.id,
+      customInput: customInput || ''
+    });
 
     return res.json({
       success: true,
-      verdict,
-      executionTime: runTime,
-      output: stdout,
-      error: runError,
+      message: 'Run task added to queue',
+      jobId: job.id
     });
 
   } catch (error) {
-    console.error('Run execution error:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Internal server error during custom run.',
-    });
+    console.error('Queue run error:', error);
+    return res.status(500).json({ success: false, message: 'Internal server error queuing code execution.' });
+  }
+});
+
+// DELETE /:id - Delete a problem (Creator only)
+router.delete('/:id', authenticateToken, requireRole('creator'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: 'Invalid problem ID.' });
+    }
+
+    const problem = await Problem.findById(id);
+    if (!problem) {
+      return res.status(404).json({ success: false, message: 'Problem not found.' });
+    }
+
+    if (problem.authorId.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Access denied. You can only delete your own problems.' });
+    }
+
+    await Problem.findByIdAndDelete(id);
+    await TestCase.deleteMany({ problemId: id });
+    await Submission.deleteMany({ problemId: id });
+
+    return res.json({ success: true, message: 'Problem deleted successfully.' });
+  } catch (error) {
+    console.error('Delete problem error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to delete problem.' });
   }
 });
 

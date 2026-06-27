@@ -10,6 +10,8 @@ const router = express.Router();
 router.get('/', optionalAuth, async (req, res) => {
   try {
     const { status, limit = 10, skip = 0 } = req.query;
+    const safeLimitVal = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
+    const safeSkipVal = Math.max(parseInt(skip, 10) || 0, 0);
     const now = new Date();
     const filter = {};
 
@@ -23,10 +25,10 @@ router.get('/', optionalAuth, async (req, res) => {
     }
 
     const contests = await Contest.find(filter)
-      .populate('creatorId', 'username email')
+      .populate('creatorId', 'username')
       .populate('problems', 'title difficulty points')
-      .limit(parseInt(limit, 10))
-      .skip(parseInt(skip, 10))
+      .limit(safeLimitVal)
+      .skip(safeSkipVal)
       .sort({ startTime: 1 });
 
     const sanitizedContests = contests.map((contest) => {
@@ -71,9 +73,9 @@ router.get('/:id', optionalAuth, async (req, res) => {
     }
 
     const contest = await Contest.findById(id)
-      .populate('creatorId', 'username email')
+      .populate('creatorId', 'username')
       .populate('problems')
-      .populate('registeredUsers', 'username email');
+      .populate('registeredUsers', 'username');
 
     if (!contest) {
       return res.status(404).json({
@@ -241,6 +243,24 @@ router.post('/', authenticateToken, requireRole('creator'), async (req, res) => 
       });
     }
 
+    if (new Date(endTime) <= new Date(startTime)) {
+      return res.status(400).json({
+        success: false,
+        message: 'End time must be after start time.',
+      });
+    }
+
+    if (Array.isArray(problems) && problems.length > 0) {
+      const Problem = require('../models/Problem');
+      const ownedProblems = await Problem.find({ _id: { $in: problems }, authorId: req.user.id });
+      if (ownedProblems.length !== problems.length) {
+        return res.status(403).json({
+          success: false,
+          message: 'You can only add problems that you created.',
+        });
+      }
+    }
+
     const contest = new Contest({
       title,
       description: description || '',
@@ -301,7 +321,19 @@ router.put('/:id', authenticateToken, requireRole('creator'), async (req, res) =
     if (description !== undefined) contest.description = description;
     if (startTime !== undefined) contest.startTime = new Date(startTime);
     if (endTime !== undefined) contest.endTime = new Date(endTime);
-    if (problems !== undefined) contest.problems = Array.isArray(problems) ? problems : [];
+    if (problems !== undefined) {
+      if (Array.isArray(problems) && problems.length > 0) {
+        const Problem = require('../models/Problem');
+        const ownedProblems = await Problem.find({ _id: { $in: problems }, authorId: req.user.id });
+        if (ownedProblems.length !== problems.length) {
+          return res.status(403).json({
+            success: false,
+            message: 'You can only add problems that you created.',
+          });
+        }
+      }
+      contest.problems = Array.isArray(problems) ? problems : [];
+    }
 
     await contest.save();
 

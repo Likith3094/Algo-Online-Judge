@@ -1,8 +1,7 @@
 const { spawn } = require("child_process");
 const path = require("path");
 
-const executeCpp = (filepath, inputPath, timeLimit = 2, memoryLimit = 256) => {
-  const jobId = path.basename(filepath).split(".")[0];
+const executeJava = (filepath, inputPath, timeLimit = 2, memoryLimit = 256) => {
   const codeFile = path.basename(filepath);
   const inputFile = path.basename(inputPath);
 
@@ -24,8 +23,8 @@ const executeCpp = (filepath, inputPath, timeLimit = 2, memoryLimit = 256) => {
       "-v", `${rootDir}/codes/${codeFile}:/app/codes/${codeFile}:ro`,
       "-v", `${rootDir}/inputs/${inputFile}:/app/inputs/${inputFile}:ro`,
       process.env.DOCKER_IMAGE_NAME || "judge-sandbox",
-      "timeout", `${timeLimit}s`,
-      "bash", "-c", `g++ /app/codes/${codeFile} -o /tmp/${jobId}.out && /tmp/${jobId}.out < /app/inputs/${inputFile}`
+      "timeout", `${Math.ceil(timeLimit) + 3}s`,
+      "bash", "-c", `cp /app/codes/${codeFile} /tmp/Solution.java && javac /tmp/Solution.java && cd /tmp && java Solution < /app/inputs/${inputFile}`
     ];
 
     const child = spawn("docker", args);
@@ -71,5 +70,5 @@ const executeCpp = (filepath, inputPath, timeLimit = 2, memoryLimit = 256) => {
 };
 
 module.exports = {
-  executeCpp,
+  executeJava,
 };

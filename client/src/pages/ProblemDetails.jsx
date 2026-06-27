@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import CodeEditor from '../components/CodeEditor';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
-import { getProblem, submitSolution, runSolution } from '../api/auth';
+import { getProblem, submitSolution, runSolution, getAiUsage, getAiHint } from '../api/auth';
+import ReactMarkdown from 'react-markdown';
 import { useAuth } from '../context/AuthContext';
 
 const codeTemplates = {
@@ -61,6 +62,13 @@ function ProblemDetails() {
   const [runningCustom, setRunningCustom] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
+  // AI Assistant states
+  const [aiUsage, setAiUsage] = useState(0);
+  const [aiLimit, setAiLimit] = useState(3);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiHint, setAiHint] = useState('');
+  const [showAiModal, setShowAiModal] = useState(false);
+
   const handleDragStart = (e) => {
     e.preventDefault();
     setIsDragging(true);
@@ -111,6 +119,18 @@ function ProblemDetails() {
           setProblem(response.data.problem);
           setSamples(response.data.sampleTestCases || []);
         }
+        
+        if (user) {
+          try {
+            const aiRes = await getAiUsage(id);
+            if (aiRes.data?.success) {
+              setAiUsage(aiRes.data.count);
+              setAiLimit(aiRes.data.limit);
+            }
+          } catch (aiErr) {
+            console.error('Failed to fetch AI usage', aiErr);
+          }
+        }
       } catch (err) {
         setError(err.response?.data?.message || 'Failed to fetch problem details.');
       } finally {
@@ -118,7 +138,7 @@ function ProblemDetails() {
       }
     };
     loadProblem();
-  }, [id]);
+  }, [id, user]);
 
   const handleLanguageChange = (e) => {
     const lang = e.target.value;
@@ -126,9 +146,37 @@ function ProblemDetails() {
     setCode(codeTemplates[lang]);
   };
 
+  const pollJobStatus = async (jobId, onComplete, onError) => {
+    try {
+      const { getJobStatus } = await import('../api/auth');
+      const interval = setInterval(async () => {
+        try {
+          const res = await getJobStatus(jobId);
+          if (res.data?.success) {
+            const { state, result, message } = res.data;
+            if (state === 'completed') {
+              clearInterval(interval);
+              onComplete(result);
+            } else if (state === 'failed') {
+              clearInterval(interval);
+              onError(new Error(message || 'Job failed'));
+            } else {
+              setConsoleLogs(prev => prev.includes('...') ? prev : prev + '...');
+            }
+          }
+        } catch (err) {
+          clearInterval(interval);
+          onError(err);
+        }
+      }, 1000);
+    } catch (err) {
+      onError(err);
+    }
+  };
+
   const handleRunCustom = async () => {
     setRunningCustom(true);
-    setConsoleLogs('> Compiling & Running code ...\n');
+    setConsoleLogs('> Enqueuing run job...\n');
     try {
       const response = await runSolution(id, {
         code,
@@ -136,29 +184,55 @@ function ProblemDetails() {
         customInput,
       });
 
-      if (response.data?.success) {
-        const { verdict, output, error: execError } = response.data;
-        let logs = '';
-        if (verdict === 'Run Successful') {
-          logs = `Output:\n${output || '[No Output]'}\n`;
-        } else {
-          logs = `${verdict}\n`;
-          if (execError) {
-            logs += `Error:\n${execError}\n`;
+      if (response.data?.success && response.data.jobId) {
+        setConsoleLogs('> Job in queue. Waiting for execution...\n');
+        pollJobStatus(response.data.jobId, (result) => {
+          setRunningCustom(false);
+          const { verdict, output, error: execError, failedTestCase } = result;
+          let logs = '';
+          
+          if (verdict === 'Success') {
+            logs = `Output:\n${output || '[No Output]'}\n`;
+          } else if (verdict === 'AC') {
+            logs = `Accepted (Sample Test Cases)\nAll sample test cases passed!`;
+          } else if (verdict === 'WA') {
+            logs = `Wrong Answer (Sample Test Cases)\n\n`;
+            if (failedTestCase?.expected) {
+              logs += `Expected Output:\n${failedTestCase.expected}\n\n`;
+            }
+            if (failedTestCase?.actual) {
+              logs += `Actual Output:\n${failedTestCase.actual}\n`;
+            }
+          } else if (verdict === 'TLE') {
+            logs = `Time Limit Exceeded\n`;
+          } else if (verdict === 'CE' || verdict === 'RE' || verdict === 'OLE') {
+            logs = `${verdict === 'CE' ? 'Compilation Error' : verdict === 'RE' ? 'Runtime Error' : 'Output Limit Exceeded'}\n\n`;
+            if (failedTestCase?.error) {
+              logs += `${failedTestCase.error}\n`;
+            } else if (execError || output) {
+              logs += `${execError || output}\n`;
+            }
+          } else {
+            logs = `Error: ${verdict}`;
           }
-        }
-        setConsoleLogs(logs);
+          setConsoleLogs(logs);
+        }, (err) => {
+          setRunningCustom(false);
+          setConsoleLogs(`> Job Error: ${err.message || 'Run failed.'}`);
+        });
+      } else {
+        setRunningCustom(false);
+        setConsoleLogs(`> Error: Failed to queue job.`);
       }
     } catch (err) {
-      setConsoleLogs(`> Error: ${err.response?.data?.message || err.message || 'Run failed.'}`);
-    } finally {
       setRunningCustom(false);
+      setConsoleLogs(`> Error: ${err.response?.data?.message || err.message || 'Run failed.'}`);
     }
   };
 
   const simulateSubmit = async () => {
     setSubmitting(true);
-    setConsoleLogs('> Submitting...\n');
+    setConsoleLogs('> Enqueuing submission...\n');
     try {
       const response = await submitSolution(id, {
         code,
@@ -166,68 +240,64 @@ function ProblemDetails() {
         contestId,
       });
 
-      if (response.data?.success) {
-        const { verdict, failedTestCase } = response.data;
-        let logs = '';
-        if (verdict === 'AC') {
-          logs = `Accepted\nAll test cases passed!`;
-        } else if (verdict === 'WA') {
-          logs = `Wrong Answer\n\n`;
-          if (failedTestCase.expected) {
-            logs += `Expected Output:\n${failedTestCase.expected}\n\n`;
+      if (response.data?.success && response.data.jobId) {
+        setConsoleLogs('> Job in queue. Waiting for execution...\n');
+        pollJobStatus(response.data.jobId, (result) => {
+          setSubmitting(false);
+          const { verdict, failedTestCase } = result;
+          let logs = '';
+          if (verdict === 'AC') {
+            logs = `Accepted\nAll test cases passed!`;
+          } else if (verdict === 'WA') {
+            logs = `Wrong Answer\n\n`;
+            if (failedTestCase?.expected) {
+              logs += `Expected Output:\n${failedTestCase.expected}\n\n`;
+            }
+            if (failedTestCase?.actual) {
+              logs += `Actual Output:\n${failedTestCase.actual}\n`;
+            }
+          } else if (verdict === 'TLE') {
+            logs = `Time Limit Exceeded\n`;
+          } else if (verdict === 'CE' || verdict === 'RE' || verdict === 'OLE') {
+            logs = `${verdict === 'CE' ? 'Compilation Error' : verdict === 'RE' ? 'Runtime Error' : 'Output Limit Exceeded'}\n\n`;
+            if (failedTestCase?.error) {
+              logs += `${failedTestCase.error}\n`;
+            }
+          } else {
+            logs = `Error: ${verdict}`;
           }
-          if (failedTestCase.actual) {
-            logs += `Actual Output:\n${failedTestCase.actual}\n`;
-          }
-        } else if (verdict === 'TLE') {
-          logs = `Time Limit Exceeded\n`;
-        } else if (verdict === 'CE') {
-          logs = `Compilation Error\n\n`;
-          if (failedTestCase.error) {
-            logs += `${failedTestCase.error}\n`;
-          }
-        } else if (verdict === 'RE') {
-          logs = `Runtime Error\n\n`;
-          if (failedTestCase.error) {
-            logs += `${failedTestCase.error}\n`;
-          }
-        }
-        setConsoleLogs(logs);
+          setConsoleLogs(logs);
+        }, (err) => {
+          setSubmitting(false);
+          setConsoleLogs(`> Job Error: ${err.message || 'Submission failed.'}`);
+        });
+      } else {
+        setSubmitting(false);
+        setConsoleLogs(`> Error: Failed to queue job.`);
       }
     } catch (err) {
-      setConsoleLogs(`> Error: ${err.response?.data?.message || err.message || 'Submission failed.'}`);
-    } finally {
       setSubmitting(false);
+      setConsoleLogs(`> Error: ${err.response?.data?.message || err.message || 'Submission failed.'}`);
     }
   };
 
-  // Solve button handler – runs solution against default tests (no custom input)
-  const handleSolve = async () => {
-    setSubmitting(true);
-    setConsoleLogs('> Solving using default test cases...\n');
+  const handleAiHelp = async () => {
+    if (aiUsage >= aiLimit) return;
+    setAiLoading(true);
+    setShowAiModal(true);
+    setAiHint('Thinking...');
+    
     try {
-      const response = await runSolution(id, {
-        code,
-        language,
-        // No customInput field means backend will use built‑in sample tests
-      });
+      const response = await getAiHint(id, { code, language });
       if (response.data?.success) {
-        const { verdict, output, error: execError } = response.data;
-        let logs = '';
-        if (verdict === 'Run Successful') {
-          logs = `Output:\n${output || '[No Output]'}\n`;
-        } else {
-          logs = `${verdict}\n`;
-          if (execError) {
-            logs += `Error:\n${execError}\n`;
-          }
-        }
-        setConsoleLogs(logs);
+        setAiHint(response.data.hint);
+        setAiUsage(response.data.usage);
+        setAiLimit(response.data.limit);
       }
     } catch (err) {
-      setConsoleLogs(`> Error: ${err.response?.data?.message || err.message || 'Solve failed.'}`);
+      setAiHint(err.response?.data?.message || 'Failed to generate AI hint.');
     } finally {
-      setSubmitting(false);
+      setAiLoading(false);
     }
   };
 
@@ -384,9 +454,9 @@ function ProblemDetails() {
                     className="btn-primary"
                     onClick={handleRunCustom}
                     disabled={isBusy}
-                    style={{ marginRight: 'auto', minWidth: '110px' }}
+                    style={{ minWidth: '110px' }}
                   >
-                    {runningCustom ? 'Running...' : 'Run Code'}
+                    {runningCustom ? 'Running...' : 'Run'}
                   </button>
 
                   <button
@@ -395,7 +465,17 @@ function ProblemDetails() {
                     disabled={isBusy}
                     style={{ minWidth: '150px' }}
                   >
-                    {submitting ? 'Submitting...' : 'Submit Solution'}
+                    {submitting ? 'Submitting...' : 'Submit'}
+                  </button>
+
+                  <button
+                    className="btn-secondary"
+                    onClick={handleAiHelp}
+                    disabled={isBusy || aiLoading || aiUsage >= aiLimit}
+                    style={{ minWidth: '110px', backgroundColor: 'var(--bg-card)', color: 'var(--primary)', border: '1px solid var(--primary)', cursor: (aiUsage >= aiLimit ? 'not-allowed' : 'pointer') }}
+                    title={aiUsage >= aiLimit ? 'You have used up all your hints for this problem.' : `You have ${Math.max(0, aiLimit - aiUsage)} requests left`}
+                  >
+                    {aiLoading ? 'Thinking...' : 'AI Help ✨'}
                   </button>
                 </>
               ) : (
@@ -416,6 +496,23 @@ function ProblemDetails() {
           </div>
         </div>
       </div>
+
+      {showAiModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ background: 'var(--panel-solid)', padding: '24px', borderRadius: '12px', width: '600px', maxWidth: '90%', maxHeight: '80vh', display: 'flex', flexDirection: 'column', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: '12px', marginBottom: '16px' }}>
+              <h2 style={{ margin: 0, color: 'var(--primary)', fontSize: '20px' }}>AI Assistant ✨</h2>
+              <button onClick={() => setShowAiModal(false)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '24px' }}>&times;</button>
+            </div>
+            <div style={{ color: 'var(--text)', fontSize: '15px', lineHeight: '1.6', overflowY: 'auto' }} className="markdown-body">
+              <ReactMarkdown>{aiHint}</ReactMarkdown>
+            </div>
+            <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid var(--border)', fontSize: '13px', color: 'var(--text-secondary)', textAlign: 'right' }}>
+              Requests remaining: {Math.max(0, aiLimit - aiUsage)}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

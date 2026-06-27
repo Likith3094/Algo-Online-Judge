@@ -1176,7 +1176,7 @@ main.main-content {
   padding: 16px 20px;
   border-top: 1px solid var(--editor-border);
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 12px;
 }
 

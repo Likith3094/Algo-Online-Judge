@@ -21,5 +21,8 @@ export const createContest = (payload) => api.post('/contests', payload);
 export const listContests = (params) => api.get('/contests', { params });
 export const getContest = (id) => api.get(`/contests/${id}`);
 export const registerContest = (contestId) => api.post(`/contests/${contestId}/register`);
+export const getAiUsage = (problemId) => api.get(`/ai/problems/${problemId}/usage`);
+export const getAiHint = (problemId, payload) => api.post(`/ai/problems/${problemId}/help`, payload);
+export const getJobStatus = (jobId) => api.get(`/jobs/${jobId}`);
 
 export default api;

@@ -1,12 +1,25 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const validator = require('validator');
+const rateLimit = require('express-rate-limit');
 const User = require('../models/User');
 const { authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
 const JWT_EXPIRY = '7d';
 const COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
+
+// Rate limiter for auth endpoints to prevent brute-force attacks
+const authLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 10, // limit each IP to 10 auth requests per minute
+  message: {
+    success: false,
+    message: 'Too many authentication attempts. Please wait a minute before trying again.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 const setCookie = (res, token) => {
   res.cookie('authToken', token, {
@@ -18,7 +31,7 @@ const setCookie = (res, token) => {
   });
 };
 
-router.post('/register', async (req, res) => {
+router.post('/register', authLimiter, async (req, res) => {
   try {
     const { username, email, password, confirmPassword, role } = req.body;
 
@@ -74,11 +87,11 @@ router.post('/register', async (req, res) => {
     if (existingUser) {
       return res.status(409).json({
         success: false,
-        message: existingUser.email === normalizedEmail ? 'Email already registered.' : 'Username already taken.',
+        message: 'An account with this email or username already exists.',
       });
     }
 
-    // Create new user
+    // Create new user, allowing frontend to dictate the role
     const newUser = new User({
       username: normalizedUsername,
       email: normalizedEmail,
@@ -117,7 +130,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
 

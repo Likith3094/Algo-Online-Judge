@@ -20,6 +20,16 @@ router.post('/', async (req, res) => {
       });
     }
 
+    // Verify the problem exists and the creator is the author
+    const Problem = require('../models/Problem');
+    const problem = await Problem.findById(problemId);
+    if (!problem) {
+      return res.status(404).json({ success: false, message: 'Problem not found.' });
+    }
+    if (problem.authorId.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Access denied. You can only add test cases to your own problems.' });
+    }
+
     const testCase = new TestCase({
       problemId,
       inputData,
