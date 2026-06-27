@@ -14,9 +14,15 @@ export const createProblem = (payload) => api.post('/problems', payload);
 export const listProblems = (params) => api.get('/problems', { params });
 export const getProblem = (id) => api.get(`/problems/${id}`);
 export const deleteProblem = (id) => api.delete(`/problems/${id}`);
+export const submitSolution = (problemId, payload) => api.post(`/problems/${problemId}/submit`, payload);
+export const runSolution = (problemId, payload) => api.post(`/problems/${problemId}/run`, payload);
+export const fetchProfile = () => api.get('/auth/profile');
 export const createContest = (payload) => api.post('/contests', payload);
 export const listContests = (params) => api.get('/contests', { params });
 export const getContest = (id) => api.get(`/contests/${id}`);
 export const registerContest = (contestId) => api.post(`/contests/${contestId}/register`);
+export const getAiUsage = (problemId) => api.get(`/ai/problems/${problemId}/usage`);
+export const getAiHint = (problemId, payload) => api.post(`/ai/problems/${problemId}/help`, payload);
+export const getJobStatus = (jobId) => api.get(`/jobs/${jobId}`);
 
 export default api;

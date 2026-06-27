@@ -60,6 +60,14 @@ const problemSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    timeLimit: {
+      type: Number,
+      default: 2,
+    },
+    memoryLimit: {
+      type: Number,
+      default: 256,
+    },
     createdAt: {
       type: Date,
       default: Date.now,

@@ -11,4 +11,10 @@ pnpm-debug.log*
 .vscode/
 .idea/
 API_REFERENCE.md
-.env.example
+
+# Server generated files
+server/codes/
+server/inputs/
+server/tmp/
+
+keys

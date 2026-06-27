@@ -15,6 +15,32 @@ function CreatorDashboard() {
   const [authorCode, setAuthorCode] = useState('');
   const [tags, setTags] = useState('');
   const [isPrivateContestProblem, setIsPrivateContestProblem] = useState(false);
+  const [timeLimit, setTimeLimit] = useState(2);
+  const [memoryLimit, setMemoryLimit] = useState(256);
+  const [testCases, setTestCases] = useState([]);
+
+  const addTestCase = () => {
+    setTestCases((prev) => [...prev, { inputData: '', expectedOutput: '', isSample: false }]);
+  };
+
+  const removeTestCase = (index) => {
+    setTestCases((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const updateTestCase = (index, key, value) => {
+    setTestCases((prev) =>
+      prev.map((tc, i) => (i === index ? { ...tc, [key]: value } : tc))
+    );
+  };
+
+  const handleTestCaseFileUpload = (index, key, file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      updateTestCase(index, key, e.target.result);
+    };
+    reader.readAsText(file);
+  };
 
   // Contest creation form states
   const [contestTitle, setContestTitle] = useState('');
@@ -79,6 +105,9 @@ function CreatorDashboard() {
         authorCode: authorCode.trim(),
         tags: tagArray,
         isPrivateContestProblem,
+        timeLimit: Number(timeLimit),
+        memoryLimit: Number(memoryLimit),
+        testCases,
       };
 
       await createProblem(payload);
@@ -95,6 +124,9 @@ function CreatorDashboard() {
       setAuthorCode('');
       setTags('');
       setIsPrivateContestProblem(false);
+      setTimeLimit(2);
+      setMemoryLimit(256);
+      setTestCases([]);
 
       // Refresh list and return to library tab
       await loadProblems();
@@ -312,6 +344,37 @@ function CreatorDashboard() {
               </div>
             </div>
 
+          <div className="form-row" style={{ gap: '20px', marginBottom: '20px' }}>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label htmlFor="probTimeLimit">Time Limit (Seconds)</label>
+              <input
+                id="probTimeLimit"
+                type="number"
+                min="1"
+                max="10"
+                className="form-input"
+                value={timeLimit}
+                onChange={(e) => setTimeLimit(Number(e.target.value))}
+                disabled={submitting}
+                required
+              />
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label htmlFor="probMemoryLimit">Memory Limit (MB)</label>
+              <input
+                id="probMemoryLimit"
+                type="number"
+                min="16"
+                max="1024"
+                className="form-input"
+                value={memoryLimit}
+                onChange={(e) => setMemoryLimit(Number(e.target.value))}
+                disabled={submitting}
+                required
+              />
+            </div>
+          </div>
+
             <div className="form-group">
               <label htmlFor="probDesc">Description & Specifications</label>
               <textarea
@@ -367,6 +430,97 @@ function CreatorDashboard() {
                   required
                 />
               </div>
+            </div>
+
+            <div className="form-group" style={{ border: '1px solid var(--border)', borderRadius: '10px', padding: '20px', marginBottom: '24px', background: 'rgba(255,255,255,0.01)' }}>
+              <h3 style={{ fontSize: '16px', fontWeight: '700', marginBottom: '8px' }}>Additional Test Cases (Hidden/Sample)</h3>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '16px' }}>
+                You can add multiple test cases to run against submissions. For each test case, you can type the data manually or upload a `.txt` file.
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '16px' }}>
+                {testCases.map((tc, index) => (
+                  <div key={index} style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '16px', background: 'rgba(0,0,0,0.1)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                      <strong style={{ fontSize: '14px' }}>Test Case #{index + 1}</strong>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                        <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px' }}>
+                          <input
+                            type="checkbox"
+                            checked={tc.isSample}
+                            onChange={(e) => updateTestCase(index, 'isSample', e.target.checked)}
+                          />
+                          Is Sample Case?
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => removeTestCase(index)}
+                          style={{ background: 'rgba(255,0,0,0.1)', color: '#ff4d4d', border: '1px solid #ff4d4d', padding: '4px 10px', borderRadius: '4px', fontSize: '12px', cursor: 'pointer' }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="form-row" style={{ gap: '16px' }}>
+                      <div className="form-group" style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                          <label style={{ margin: 0 }}>Input Data</label>
+                          <input
+                            type="file"
+                            accept=".txt"
+                            style={{ display: 'none' }}
+                            id={`tc-input-file-${index}`}
+                            onChange={(e) => handleTestCaseFileUpload(index, 'inputData', e.target.files[0])}
+                          />
+                          <label htmlFor={`tc-input-file-${index}`} style={{ margin: 0, fontSize: '12px', padding: '2px 8px', background: 'var(--border)', borderRadius: '4px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                            📂 Upload Input File
+                          </label>
+                        </div>
+                        <textarea
+                          rows="3"
+                          className="form-textarea"
+                          placeholder="Standard Input data"
+                          value={tc.inputData}
+                          onChange={(e) => updateTestCase(index, 'inputData', e.target.value)}
+                        />
+                      </div>
+
+                      <div className="form-group" style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                          <label style={{ margin: 0 }}>Expected Output</label>
+                          <input
+                            type="file"
+                            accept=".txt"
+                            style={{ display: 'none' }}
+                            id={`tc-output-file-${index}`}
+                            onChange={(e) => handleTestCaseFileUpload(index, 'expectedOutput', e.target.files[0])}
+                          />
+                          <label htmlFor={`tc-output-file-${index}`} style={{ margin: 0, fontSize: '12px', padding: '2px 8px', background: 'var(--border)', borderRadius: '4px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                            📂 Upload Output File
+                          </label>
+                        </div>
+                        <textarea
+                          rows="3"
+                          className="form-textarea"
+                          placeholder="Expected Standard Output"
+                          value={tc.expectedOutput}
+                          onChange={(e) => updateTestCase(index, 'expectedOutput', e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={addTestCase}
+                style={{ width: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+              >
+                ➕ Add Test Case
+              </button>
             </div>
 
             <div className="form-group">

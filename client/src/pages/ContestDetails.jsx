@@ -113,16 +113,19 @@ function ContestDetails() {
   }
 
   const isCreator = user?.role === 'creator';
-  const isRegistered = contest.registeredUsers?.some((u) => {
+  const isRegistered = user && contest.registeredUsers?.some((u) => {
     if (!u) return false;
     return typeof u === 'string' ? u === user?.id : u._id === user?.id;
   });
 
   const now = new Date();
+  const contestStarted = now >= new Date(contest.startTime);
   const contestEnded = now > new Date(contest.endTime);
 
-  // Users must register to see problems unless they are the creator or the contest has ended
-  const canAccessContent = isRegistered || isCreator || contestEnded;
+  // Users must register to see problems and the contest must have started,
+  // unless they are the creator or the contest has ended
+  const canAccessContent = isCreator || contestEnded || (isRegistered && contestStarted);
+  const isLoggedIn = !!user;
 
   return (
     <div className="contest-details-container">
@@ -158,9 +161,15 @@ function ContestDetails() {
             <div className="panel-card" style={{ textAlign: 'center', padding: '60px 40px' }}>
               <h3 style={{ fontSize: '22px', marginBottom: '16px' }}>Registration Required</h3>
               <p style={{ color: 'var(--text-secondary)', marginBottom: '32px', maxWidth: '500px', margin: '0 auto 30px' }}>
-                You must register to participate in this contest, view the problems, and submit solutions.
+                {isLoggedIn
+                  ? 'You must register to participate in this contest, view the problems, and submit solutions.'
+                  : 'Sign in and register to participate in this contest, view the problems, and submit solutions.'}
               </p>
-              {contestEnded ? (
+              {!isLoggedIn ? (
+                <Link to="/login" className="btn-primary" style={{ padding: '14px 40px', textDecoration: 'none' }}>
+                  Sign In to Register
+                </Link>
+              ) : contestEnded ? (
                 <p className="muted">This contest has ended. Registration is closed.</p>
               ) : (
                 <button className="btn-primary" onClick={handleRegister} style={{ padding: '14px 40px' }}>
